@@ -1,0 +1,72 @@
+import os
+import json
+
+# Nazwa folderu głównego do przeszukania
+TARGET_FOLDER = 'figo'
+# Klucz do usunięcia
+KEY_TO_REMOVE = 'url'
+
+def remove_key_recursive(data, key):
+    """
+    Rekurencyjnie usuwa klucz ze słowników i list zagnieżdżonych.
+    Działa w miejscu (modyfikuje przekazany obiekt).
+    """
+    if isinstance(data, dict):
+        # Jeśli znaleziono klucz w słowniku, usuń go
+        if key in data:
+            del data[key]
+        # Przeszukaj pozostałe wartości
+        for k, v in data.items():
+            remove_key_recursive(v, key)
+            
+    elif isinstance(data, list):
+        # Jeśli to lista, przeszukaj każdy element
+        for item in data:
+            remove_key_recursive(item, key)
+
+def process_files():
+    if not os.path.exists(TARGET_FOLDER):
+        print(f"❌ Błąd: Nie znaleziono folderu '{TARGET_FOLDER}' w bieżącym katalogu.")
+        return
+
+    print(f"🚀 Rozpoczynam czyszczenie plików w folderze '{TARGET_FOLDER}'...")
+    processed_count = 0
+    error_count = 0
+
+    # Przechodzimy przez wszystkie katalogi i podkatalogi (os.walk)
+    for root, dirs, files in os.walk(TARGET_FOLDER):
+        for file in files:
+            # Interesują nas tylko pliki .json
+            if file.lower().endswith('.json'):
+                file_path = os.path.join(root, file)
+                
+                try:
+                    # 1. Wczytaj plik
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+
+                    # 2. Usuń klucz (rekurencyjnie, jeśli jest zagnieżdżony)
+                    remove_key_recursive(data, KEY_TO_REMOVE)
+
+                    # 3. Zapisz plik z powrotem (formatując go ładnie)
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        json.dump(data, f, indent=4, ensure_ascii=False)
+                    
+                    print(f"✅ Wyczyszczono: {file_path}")
+                    processed_count += 1
+
+                except json.JSONDecodeError:
+                    print(f"⚠️ Pominięto (błąd składni JSON): {file_path}")
+                    error_count += 1
+                except Exception as e:
+                    print(f"❌ Błąd pliku {file_path}: {e}")
+                    error_count += 1
+
+    print("\n" + "="*40)
+    print(f"🏁 Zakończono.")
+    print(f"Przetworzono plików: {processed_count}")
+    if error_count > 0:
+        print(f"Błędów: {error_count}")
+
+if __name__ == "__main__":
+    process_files()
