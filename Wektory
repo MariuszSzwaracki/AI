@@ -1,0 +1,129 @@
+import os
+import json
+import pickle
+import sys
+import numpy as np
+from tqdm import tqdm
+import torch
+from sentence_transformers import SentenceTransformer
+
+# --- KONFIGURACJA ---
+FOLDER_PATH = r'./test'    # Folder z plikami JSON
+MODEL_NAME = 'BAAI/bge-m3' 
+OUTPUT_DB = 'baza_wiedzy.pkl'
+OUTPUT_VEC = 'wektory_tytulow.npy'
+
+def load_json_files(folder):
+    data_list = []
+    if not os.path.exists(folder):
+        print(f"❌ Błąd: Nie znaleziono folderu '{folder}'!")
+        return []
+
+    # Pobieranie listy plików JSON (również z podfolderów, jeśli są)
+    files = []
+    for root, dirs, filenames in os.walk(folder):
+        for filename in filenames:
+            if filename.lower().endswith('.json'):
+                files.append(os.path.join(root, filename))
+
+    print(f"📂 Znaleziono {len(files)} plików JSON. Przetwarzanie...")
+
+    for filepath in tqdm(files, unit="plik"):
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = json.load(f)
+                
+                # Obsługa sytuacji, gdy w pliku jest jeden obiekt lub lista obiektów
+                if isinstance(content, list):
+                    items = content
+                else:
+                    items = [content]
+
+                for item in items:
+                    # Sprawdzenie czy to właściwe dane (czy mają klucz 'id' lub 'tytul')
+                    if 'tytul' not in item and 'opis' not in item:
+                        continue
+                        
+                    # --- TWORZENIE TEKSTU DLA AI (SEMANTYCZNEGO) ---
+                    # Łączymy kluczowe pola, żeby AI wiedziało co to jest.
+                    # Np.: "Pani szuka pana. Poszukuję mężczyzny. Opis:..."
+                    
+                    full_text_for_ai = (
+                        f"Kategoria: {item.get('kategoria', '')}. "
+                        f"Miasto: {item.get('lokalizacja', '')}. "
+                        f"Wiek: {item.get('wiek', '')}. "
+                        f"{item.get('tytul', '')}. "
+                        f"{item.get('opis', '')}"
+                    )
+                    
+                    # Dodajemy pole 'title' i 'headers' dla kompatybilności z generatorem
+                    # 'title' to będzie tytuł ogłoszenia
+                    # 'headers' to będą zdania z opisu (żeby generator miał co "cytować")
+                    
+                    raw_desc = item.get('opis', '')
+                    if raw_desc:
+                        # Prosty podział opisu na zdania jako "rozdziały/nagłówki"
+                        pseudo_headers = [s.strip() for s in raw_desc.replace('!', '.').replace('?', '.').split('.') if len(s) > 10]
+                    else:
+                        pseudo_headers = ["Brak opisu"]
+
+                    # Budujemy obiekt do bazy
+                    entry = {
+                        'original_id': item.get('id'),
+                        'title': item.get('tytul', 'Bez tytułu'), # Dla generatora
+                        'headers': pseudo_headers,                # Dla generatora
+                        'full_text': full_text_for_ai,            # To będziemy wektoryzować
+                        'metadata': item                          # Zachowujemy oryginał w całości
+                    }
+                    data_list.append(entry)
+
+        except Exception as e:
+            print(f"⚠️ Błąd w pliku {filepath}: {e}")
+            continue
+
+    return data_list
+
+def main():
+    # 1. Wczytywanie danych z plików
+    docs = load_json_files(FOLDER_PATH)
+    if not docs:
+        print("❌ Brak danych do przetworzenia.")
+        return
+    
+    print(f"✅ Załadowano {len(docs)} ogłoszeń.")
+
+    # 2. Ładowanie modelu
+    print(f"⏳ Ładowanie modelu {MODEL_NAME}...")
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    try:
+        model = SentenceTransformer(MODEL_NAME, device=device)
+    except ImportError:
+        sys.exit("❌ Brak bibliotek. Zainstaluj: pip install sentence-transformers torch numpy tqdm")
+
+    # 3. Generowanie embeddingów
+    print("🧠 Generowanie wektorów (to może chwilę potrwać)...")
+    
+    # Wektoryzujemy przygotowany 'full_text' (czyli połączenie kategorii, tytułu i opisu)
+    texts_to_encode = [d['full_text'] for d in docs]
+    
+    # Batch size dobrany bezpiecznie
+    embeddings = model.encode(texts_to_encode, show_progress_bar=True, batch_size=32, convert_to_numpy=True)
+
+    # 4. Zapisywanie wyników
+    print(f"\n💾 ZAPISYWANIE BAZY DANYCH...")
+    
+    # Zapis wektorów (.npy)
+    np.save(OUTPUT_VEC, embeddings)
+    print(f"   -> Zapisano wektory: {OUTPUT_VEC}")
+    
+    # Zapis struktury (.pkl)
+    # Usuwamy 'full_text' przed zapisem, żeby plik był lżejszy (chyba że chcesz go mieć)
+    # Tutaj zostawiam, bo może się przydać.
+    with open(OUTPUT_DB, 'wb') as f:
+        pickle.dump(docs, f)
+    print(f"   -> Zapisano bazę: {OUTPUT_DB}")
+
+    print("\n✅ GOTOWE! Możesz teraz użyć generatora.")
+
+if __name__ == "__main__":
+    main()
